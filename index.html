@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Word Embedding Visualization</title>
+    <style>
+        body { 
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+        }
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            max-width: 300px;
+        }
+        #wordInfo {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            display: none;
+        }
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 20px;
+            border-radius: 5px;
+            font-size: 18px;
+        }
+        #modelSelector {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            z-index: 100;
+        }
+        select {
+            padding: 5px;
+            background-color: #333;
+            color: white;
+            border: 1px solid #555;
+            border-radius: 3px;
+            font-size: 14px;
+        }
+        .stats {
+            margin-top: 10px;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">
+        <h3>English Word Embedding Visualization</h3>
+        <p>Navigate: Left click + drag to rotate, right click + drag to pan, scroll to zoom</p>
+        <p>Click on a word sphere to see details</p>
+    </div>
+    <div id="modelSelector">
+        <h3>Select Model Epoch</h3>
+        <select id="epochSelect" onchange="loadSelectedModel()">
+            <option value="5">5 Epochs</option>
+            <option value="15">15 Epochs</option>
+            <option value="25">25 Epochs</option>
+            <option value="35">35 Epochs</option>
+            <option value="45">45 Epochs</option>
+            <option value="55">55 Epochs</option>
+            <option value="65">65 Epochs</option>
+            <option value="75" selected>75 Epochs</option>
+            <option value="85">85 Epochs</option>
+            <option value="95">95 Epochs</option>
+            <option value="105">105 Epochs</option>
+        </select>
+        <div class="stats" id="modelStats"></div>
+    </div>
+    <div id="wordInfo"></div>
+    <div id="loading">Loading word embeddings...</div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.module.min.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+    
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        
+        // Make functions available globally
+        window.loadSelectedModel = loadSelectedModel;
+        
+        // Main Three.js variables
+        let scene, camera, renderer, controls;
+        let raycaster, mouse, wordObjects = [];
+        let selectedObject = null;
+        let currentWordGroup = null;
+        let currentEpoch = 75; // Default model
+        
+        // Initialize the scene
+        function init() {
+            // Create scene
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x111133);
+            
+            // Create camera
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = 50;
+            
+            // Create renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            document.body.appendChild(renderer.domElement);
+            
+            // Add ambient light
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+            scene.add(ambientLight);
+            
+            // Add directional light
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(10, 10, 10);
+            scene.add(directionalLight);
+            
+            // Add orbit controls
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            
+            // Setup for object selection
+            raycaster = new THREE.Raycaster();
+            mouse = new THREE.Vector2();
+            
+            // Add axes helper
+            const axesHelper = new THREE.AxesHelper(20);
+            scene.add(axesHelper);
+            
+            // Add event listeners
+            window.addEventListener('resize', onWindowResize);
+            window.addEventListener('click', onClick);
+            
+            // Load initial model
+            loadWordEmbeddings(currentEpoch);
+            
+            // Start animation
+            animate();
+        }
+        
+        // Load selected model based on dropdown selection
+        function loadSelectedModel() {
+            // Get selected epoch
+            const epochSelect = document.getElementById('epochSelect');
+            const selectedEpoch = epochSelect.value;
+            
+            // Clear previous word info
+            document.getElementById('wordInfo').style.display = 'none';
+            
+            // Reset selection
+            if (selectedObject) {
+                selectedObject.material.emissive.setHex(selectedObject.currentHex);
+                selectedObject = null;
+            }
+            
+            // Load new model
+            loadWordEmbeddings(selectedEpoch);
+        }
+        
+        // Load word embeddings from JSON file
+        function loadWordEmbeddings(epoch) {
+            // Update current epoch
+            currentEpoch = epoch;
+            
+            // Show loading message
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('loading').textContent = `Loading model with ${epoch} epochs...`;
+            
+            // Clear previous word objects
+            if (currentWordGroup) {
+                scene.remove(currentWordGroup);
+                currentWordGroup = null;
+            }
+            wordObjects = [];
+            
+            // Load selected model
+            const filename = `fasttext_english_${epoch}epochs_3d.json`;
+            
+            fetch(filename)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`Network response was not ok: ${response.status}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    createWordObjects(data);
+                    document.getElementById('loading').style.display = 'none';
+                    
+                    // Update stats
+                    document.getElementById('modelStats').innerHTML = `
+                        <p>Words: ${data.length}</p>
+                        <p>Current model: ${filename}</p>
+                    `;
+                })
+                .catch(error => {
+                    console.error('Error loading word embeddings:', error);
+                    document.getElementById('loading').textContent = `Error loading ${filename}. Check console for details.`;
+                });
+        }
+        
+        // Create 3D objects for each word
+        function createWordObjects(words) {
+            // Find min and max values for normalization
+            let minX = Infinity, maxX = -Infinity;
+            let minY = Infinity, maxY = -Infinity;
+            let minZ = Infinity, maxZ = -Infinity;
+            
+            words.forEach(word => {
+                minX = Math.min(minX, word.x);
+                maxX = Math.max(maxX, word.x);
+                minY = Math.min(minY, word.y);
+                maxY = Math.max(maxY, word.y);
+                minZ = Math.min(minZ, word.z);
+                maxZ = Math.max(maxZ, word.z);
+            });
+            
+            // Create a sphere for each word
+            const geometry = new THREE.SphereGeometry(0.2, 16, 16);
+            const wordGroup = new THREE.Group();
+            currentWordGroup = wordGroup;
+            
+            words.forEach(word => {
+                // Create material with a random color based on position
+                const hue = ((word.x - minX) / (maxX - minX)) * 0.6;
+                const saturation = 0.8;
+                const lightness = 0.5;
+                const color = new THREE.Color().setHSL(hue, saturation, lightness);
+                const material = new THREE.MeshStandardMaterial({ color: color, emissive: color.clone().multiplyScalar(0.2) });
+                
+                // Create mesh and set position
+                const sphere = new THREE.Mesh(geometry, material);
+                sphere.position.set(word.x, word.y, word.z);
+                sphere.userData = {
+                    word: word.word,
+                    x: word.x.toFixed(3),
+                    y: word.y.toFixed(3),
+                    z: word.z.toFixed(3),
+                    epochs: currentEpoch
+                };
+                
+                wordObjects.push(sphere);
+                wordGroup.add(sphere);
+            });
+            
+            // Add all word spheres to the scene
+            scene.add(wordGroup);
+            
+            // Center the camera on the word cloud
+            const center = new THREE.Vector3(
+                (minX + maxX) / 2,
+                (minY + maxY) / 2,
+                (minZ + maxZ) / 2
+            );
+            
+            controls.target.copy(center);
+            camera.position.set(center.x, center.y, center.z + 80);
+            controls.update();
+        }
+        
+        // Handle window resize
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+        
+        // Handle mouse click
+        function onClick(event) {
+            // Calculate mouse position in normalized device coordinates
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+            
+            // Update the picking ray with the camera and mouse position
+            raycaster.setFromCamera(mouse, camera);
+            
+            // Find intersections
+            const intersects = raycaster.intersectObjects(wordObjects);
+            
+            // Reset previous selection
+            if (selectedObject) {
+                selectedObject.material.emissive.setHex(selectedObject.currentHex);
+                selectedObject = null;
+            }
+            
+            // Hide word info by default
+            const wordInfo = document.getElementById('wordInfo');
+            wordInfo.style.display = 'none';
+            
+            // If we clicked on an object
+            if (intersects.length > 0) {
+                selectedObject = intersects[0].object;
+                selectedObject.currentHex = selectedObject.material.emissive.getHex();
+                selectedObject.material.emissive.setHex(0xffffff);
+                
+                // Display word info
+                const wordData = selectedObject.userData;
+                wordInfo.innerHTML = `
+                    <h3>Word: ${wordData.word}</h3>
+                    <p>Position: (${wordData.x}, ${wordData.y}, ${wordData.z})</p>
+                    <p>Model: ${wordData.epochs} epochs</p>
+                `;
+                wordInfo.style.display = 'block';
+            }
+        }
+        
+        // Animation loop
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+        
+        // Start the visualization
+        init();
+    </script>
+</body>
+</html>
